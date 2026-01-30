@@ -2,13 +2,22 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <Preferences.h>
 #include "AudioFileSourceHTTPStream.h"
 #include "AudioFileSourceICYStream.h"
 #include "AudioFileSourceBuffer.h"
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
 
-#include "setting/setting.h"
+#include "setting.h"
+
+// ===== Preferences 객체 =====
+Preferences prefs;
+
+// ===== 설정 변수 =====
+String wifiSSID;
+String wifiPASS;
+String serverURL;
 
 AudioGeneratorMP3 *mp3 = nullptr;
 AudioFileSourceICYStream* fileHttp = nullptr;
@@ -18,15 +27,83 @@ AudioOutputI2S *out = nullptr;
 int lastButtonState = HIGH;
 
 bool isPlaying = false;
+bool wifiConnected = false;
 
-// 랜덤 MP3 선택
+// ===== 설정 관리 =====
+void loadSettings()
+{
+  prefs.begin("config", true);
+  wifiSSID = prefs.getString("ssid", "");
+  wifiPASS = prefs.getString("pass", "");
+  serverURL = prefs.getString("server", "");
+  prefs.end();
+
+  if (wifiSSID.isEmpty() || wifiPASS.isEmpty() || serverURL.isEmpty())
+  {
+    Serial.println("⚠️ 설정 없음. 시리얼로 설정하세요.");
+  }
+  else
+  {
+    Serial.println("✅ 설정 로드 완료");
+    Serial.println("SSID   : " + wifiSSID);
+    Serial.println("SERVER : " + serverURL);
+  }
+}
+
+void saveSettings()
+{
+  prefs.begin("config", false);
+  prefs.putString("ssid", wifiSSID);
+  prefs.putString("pass", wifiPASS);
+  prefs.putString("server", serverURL);
+  prefs.end();
+  Serial.println("💾 설정 저장 완료");
+}
+
+// ===== Wi-Fi 연결 =====
+bool connectWiFi()
+{
+  if (wifiSSID.isEmpty())
+  {
+    Serial.println("❌ WiFi 설정 없음");
+    return false;
+  }
+
+  Serial.print("📡 WiFi 연결 중: ");
+  Serial.println(wifiSSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
+
+  unsigned long startTime = millis();
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+
+    if (millis() - startTime > 20000)  // 20초 타임아웃
+    {
+      Serial.println("\n⏱️ WiFi 연결 시간 초과!");
+      Serial.println("❌ WiFi 연결 실패");
+      Serial.println("💡 시리얼 명령어로 설정을 확인하거나 변경하세요.");
+      WiFi.disconnect();
+      return false;
+    }
+  }
+
+  Serial.println("\n✅ WiFi 연결 완료");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+  return true;
+}
+
+// ===== 랜덤 MP3 선택 =====
 String getRandomMP3Url()
 {
   int n = random(1, 11);
-  return String(mp3BaseUrl) + String(n) + String(".mp3");
+  return serverURL + String(n) + String(".mp3");
 }
 
-// 오디오 정리
+// ===== 오디오 정리 =====
 void stopAndCleanup()
 {
   if (mp3)
@@ -50,12 +127,18 @@ void stopAndCleanup()
   isPlaying = false;
 }
 
-// MP3 재생
+// ===== MP3 재생 =====
 void playMP3(const String &url)
 {
+  if (!wifiConnected)
+  {
+    Serial.println("⚠️ WiFi 연결 안됨. 재생 불가");
+    return;
+  }
+
   stopAndCleanup();
 
-  Serial.print("재생 시작: ");
+  Serial.print("▶ 재생 시작: ");
   Serial.println(url);
 
   fileHttp = new AudioFileSourceICYStream(url.c_str());
@@ -64,40 +147,102 @@ void playMP3(const String &url)
 
   if (!mp3->begin(fileBuf, out))
   {
-    Serial.println("MP3 재생 실패!");
+    Serial.println("❌ MP3 재생 실패!");
     stopAndCleanup();
   }
   else
   {
     isPlaying = true;
-    Serial.println("재생 중...");
+    Serial.println("✅ 재생 중...");
+  }
+}
+
+// ===== 시리얼 명령어 처리 =====
+void printHelp()
+{
+  Serial.println("❓ 알 수 없는 명령");
+  Serial.println("사용 가능한 명령어:");
+  Serial.println("  WIFI SSID <이름>");
+  Serial.println("  WIFI PASS <비밀번호>");
+  Serial.println("  SERVER <주소>");
+  Serial.println("  SAVE");
+  Serial.println("  STATUS");
+  Serial.println("  CONNECT");
+  Serial.println("  REBOOT");
+}
+
+void printStatus()
+{
+  Serial.println("===== 상태 =====");
+  Serial.println("SSID   : " + wifiSSID);
+  Serial.println("SERVER : " + serverURL);
+  Serial.println("WiFi   : " + String(wifiConnected ? "연결됨" : "연결 안됨"));
+  Serial.println("재생   : " + String(isPlaying ? "재생 중" : "정지"));
+  Serial.println("================");
+}
+
+void handleSerialCommand()
+{
+  if (!Serial.available()) return;
+
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+
+  if (cmd.startsWith("WIFI SSID "))
+  {
+    wifiSSID = cmd.substring(10);
+    Serial.println("✅ SSID 설정: " + wifiSSID);
+  }
+  else if (cmd.startsWith("WIFI PASS "))
+  {
+    wifiPASS = cmd.substring(10);
+    Serial.println("✅ 비밀번호 설정됨");
+  }
+  else if (cmd.startsWith("SERVER "))
+  {
+    serverURL = cmd.substring(7);
+    Serial.println("✅ 서버 설정: " + serverURL);
+  }
+  else if (cmd == "SAVE")
+  {
+    saveSettings();
+  }
+  else if (cmd == "REBOOT")
+  {
+    Serial.println("🔄 재부팅 중...");
+    delay(1000);
+    ESP.restart();
+  }
+  else if (cmd == "STATUS")
+  {
+    printStatus();
+  }
+  else if (cmd == "CONNECT")
+  {
+    Serial.println("🔄 WiFi 재연결 시도 중...");
+    wifiConnected = connectWiFi();
+  }
+  else
+  {
+    printHelp();
   }
 }
 
 void setup()
 {
   Serial.begin(115200);
-  delay(1000);
-
-  Serial.println("\n=== ESP32 MP3 플레이어 시작 ===");
+  delay(3000);
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   lastButtonState = digitalRead(BUTTON_PIN);
 
-  // Wi-Fi 연결
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  Serial.print("Wi-Fi 연결 중");
+  Serial.println("╔════════════════════════════════════╗");
+  Serial.println("║  🎵 ESP32 MP3 플레이어             ║");
+  Serial.println("╚════════════════════════════════════╝");
 
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(500);
-    Serial.print(".");
-  }
+  loadSettings();
 
-  Serial.println("\nWi-Fi 연결 성공!");
-  Serial.print("IP 주소: ");
-  Serial.println(WiFi.localIP());
+  wifiConnected = connectWiFi();
 
   out = new AudioOutputI2S();
   out->SetPinout(I2S_SPK_BCLK, I2S_SPK_LRCL, I2S_SPK_DIN);
@@ -105,20 +250,43 @@ void setup()
 
   randomSeed(millis());
 
-  Serial.println("\n=== 준비 완료 ===");
-  Serial.println("버튼을 누르면 랜덤 MP3 재생\n");
+  Serial.println("\n===== 준비 완료 =====");
+  if (wifiConnected)
+  {
+    Serial.println("✅ 버튼을 누르면 랜덤 MP3 재생");
+  }
+  else
+  {
+    Serial.println("⚠️ WiFi 연결 실패");
+    Serial.println("💡 시리얼 명령어를 입력하여 설정하세요");
+  }
+  Serial.println();
 }
 
 void loop()
 {
-  if (WiFi.status() != WL_CONNECTED)
+  // 시리얼 명령어 처리
+  handleSerialCommand();
+
+  // WiFi 연결 상태 체크
+  if (wifiConnected && WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("Wi-Fi 연결 끊김! 재연결 시도...");
-    WiFi.reconnect();
-    delay(3000);
-    return;
+    Serial.println("⚠️ WiFi 연결 끊김!");
+    wifiConnected = false;
+    if (isPlaying)
+    {
+      stopAndCleanup();
+    }
   }
 
+  // WiFi 자동 재연결
+  if (!wifiConnected && WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("✅ WiFi 자동 재연결됨");
+    wifiConnected = true;
+  }
+
+  // 버튼 처리
   int buttonState = digitalRead(BUTTON_PIN);
 
   if (lastButtonState == HIGH && buttonState == LOW)
@@ -129,6 +297,7 @@ void loop()
 
   lastButtonState = buttonState;
 
+  // MP3 재생 처리
   if (mp3 && mp3->isRunning())
   {
     if (!mp3->loop())
