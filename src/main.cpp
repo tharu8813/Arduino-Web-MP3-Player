@@ -29,6 +29,43 @@ int lastButtonState = HIGH;
 bool isPlaying = false;
 bool wifiConnected = false;
 
+// ===== URL 정규화 함수 =====
+String normalizeServerURL(String url)
+{
+  url.trim();
+  
+  // http:// 또는 https:// 제거
+  if (url.startsWith("http://"))
+  {
+    url = url.substring(7);
+  }
+  else if (url.startsWith("https://"))
+  {
+    url = url.substring(8);
+  }
+  
+  // 마지막 슬래시 제거
+  while (url.endsWith("/"))
+  {
+    url = url.substring(0, url.length() - 1);
+  }
+  
+  return url;
+}
+
+String buildHTTPURL(String path)
+{
+  String normalized = normalizeServerURL(serverURL);
+  
+  // path가 슬래시로 시작하지 않으면 추가
+  if (!path.startsWith("/"))
+  {
+    path = "/" + path;
+  }
+  
+  return "http://" + normalized + path;
+}
+
 // ===== 설정 관리 =====
 void loadSettings()
 {
@@ -47,17 +84,22 @@ void loadSettings()
     Serial.println("✅ 설정 로드 완료");
     Serial.println("SSID   : " + wifiSSID);
     Serial.println("SERVER : " + serverURL);
+    Serial.println("정규화 : " + normalizeServerURL(serverURL));
   }
 }
 
 void saveSettings()
 {
+  // 저장 전 URL 정규화
+  serverURL = normalizeServerURL(serverURL);
+  
   prefs.begin("config", false);
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPASS);
   prefs.putString("server", serverURL);
   prefs.end();
   Serial.println("💾 설정 저장 완료");
+  Serial.println("정규화된 서버: " + serverURL);
 }
 
 // ===== Wi-Fi 연결 =====
@@ -80,7 +122,7 @@ bool connectWiFi()
     delay(500);
     Serial.print(".");
 
-    if (millis() - startTime > 20000)  // 20초 타임아웃
+    if (millis() - startTime > 10000)  // 10초 타임아웃
     {
       Serial.println("\n⏱️ WiFi 연결 시간 초과!");
       Serial.println("❌ WiFi 연결 실패");
@@ -100,7 +142,8 @@ bool connectWiFi()
 String getRandomMP3Url()
 {
   int n = random(1, 11);
-  return serverURL + String(n) + String(".mp3");
+  // URL 정규화를 사용하여 올바른 URL 생성
+  return buildHTTPURL("/" + String(n) + ".mp3");
 }
 
 // ===== 오디오 정리 =====
@@ -176,6 +219,7 @@ void printStatus()
   Serial.println("===== 상태 =====");
   Serial.println("SSID   : " + wifiSSID);
   Serial.println("SERVER : " + serverURL);
+  Serial.println("정규화 : " + normalizeServerURL(serverURL));
   Serial.println("WiFi   : " + String(wifiConnected ? "연결됨" : "연결 안됨"));
   Serial.println("재생   : " + String(isPlaying ? "재생 중" : "정지"));
   Serial.println("================");
@@ -200,8 +244,10 @@ void handleSerialCommand()
   }
   else if (cmd.startsWith("SERVER "))
   {
-    serverURL = cmd.substring(7);
-    Serial.println("✅ 서버 설정: " + serverURL);
+    String rawURL = cmd.substring(7);
+    serverURL = normalizeServerURL(rawURL);
+    Serial.println("✅ 서버 설정: " + rawURL);
+    Serial.println("   정규화됨: " + serverURL);
   }
   else if (cmd == "SAVE")
   {
